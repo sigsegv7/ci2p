@@ -94,11 +94,8 @@ load_cert(const char *filename, struct i2pcert **res)
 {
     struct file *fp;
     struct i2pcert *cert;
-    size_t len;
     char *issuer;
-    char pubkey[1024];
     int retval = 0;
-    int pubkey_algonid;
     X509 *x509 = NULL;
     ASN1_TIME *not_before = NULL;
     ASN1_TIME *not_after = NULL;
