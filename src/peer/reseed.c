@@ -28,21 +28,27 @@
  */
 
 #include <sys/stat.h>
+#include <sys/queue.h>
 #include <peer/reseed.h>
+#include <peer/netdb.h>
 #include <crypto/i2pcert.h>
 #include <lib/file.h>
 #include <lib/log.h>
 #include <lib/bswap.h>
 #include <curl/curl.h>
+#include <ctype.h>
 #include <string.h>
 #include <dirent.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include <zip.h>
 
 #define RESEED_SUFFIX "i2pseeds.su3"
 #define DEFAULT_SU3_PATH "/etc/ci2p/reseed.su3"
 #define DEFAULT_CERTDIR_PATH "/etc/ci2p/certs/"
+#define DEFAULT_VARDIR_PATH  "/var/run/ci2p/"
+#define DEFAULT_NETDB_PATH DEFAULT_VARDIR_PATH "netdb/"
 
 /*
  * A list of hardcoded URLs to reseed servers
@@ -184,6 +190,50 @@ get_su3(CURL *curl, const char *url)
     return 0;
 }
 
+static int
+netdb_get_key(const char *dat, const char *key, char *res)
+{
+    size_t index = 0;
+    char *value, *p, *p1;
+    int assign_start = 0;
+
+    value = strstr(dat, key);
+    if (value == NULL) {
+        return -1;
+    }
+
+    for (p = value; *p != '\0'; ++p) {
+        if (assign_start == 0 && *p != '=') {
+            continue;
+        } else if (*p == '=' && assign_start == 0) {
+            assign_start = 1;
+            ++p;
+        }
+
+        while (iscntrl(*p) && *p != '\0') {
+            ++p;
+        }
+
+        for (p1 = p; *p1 != ';' && *p1 != '\0'; ++p1) {
+            if (*p1 == ' ') {
+                continue;
+            }
+
+            if (!isascii(*p1) || iscntrl(*p1)) {
+                res[0] = '\0';
+                return -1;
+            }
+
+            res[index++] = *p1;
+            res[index] = '\0';
+        }
+
+        break;
+    }
+
+    return 0;
+}
+
 /*
  * Verify the SU3 signature.
  *
@@ -209,6 +259,144 @@ verify_su3(const struct su3_hdr *hdr, struct i2pcert *cert)
     return 0;
 }
 
+static void
+rinfchain_free(struct rinfchain *rinfchain)
+{
+    struct router_info *tmp;
+
+    while ((tmp = TAILQ_FIRST(&rinfchain->head)) != NULL) {
+        TAILQ_REMOVE(&rinfchain->head, tmp, link);
+        free(tmp->address);
+        free(tmp->port);
+        free(tmp);
+    }
+
+    free(rinfchain);
+}
+
+/*
+ * Unpack an .su3 payload and give back a router info
+ * chain (rinfchain) through 'res'.
+ *
+ * @reseed_payload: Payload to unpack.
+ * @size: Size of payload.
+ * @res: Output for router info chain.
+ */
+static int
+unpack_payload(const char *reseed_payload, size_t size,
+    struct rinfchain **res)
+{
+    const size_t BLOCKSIZE = 128;
+    int error, zip_entries;
+    size_t bytes_read;
+    double count, progress = 0;
+    double max_progress;
+    char tmp_path[512];
+    char netdb_path[1024];
+    char *buf;
+    char ip[64], port[32];
+    struct file *fp, *netdb_fp;
+    struct zip_file *zfp;
+    struct zip_stat stat;
+    struct zip *za;
+    struct rinfchain *rc;
+    struct router_info *rinf;
+
+    memset(ip, 0, sizeof(ip));
+    memset(port, 0, sizeof(port));
+
+    snprintf(tmp_path, sizeof(tmp_path), "%sci2p-peers.zip",
+        DEFAULT_VARDIR_PATH);
+
+    /*
+     * Open [DEFAULT_VARDIR_PATH]/ci2p-%d-peers.zip so we can
+     * write the zip there and open it with libzip.
+     */
+    if ((error = open_file(tmp_path, "w", &fp)) < 0) {
+        printf(LOG_ERR "Failed to create \"%s\"", tmp_path);
+        return error;
+    }
+
+    /* Write the zip */
+    fwrite(reseed_payload, sizeof(char), size, FHANDLE(fp));
+    close_file(fp);
+
+    za = zip_open(tmp_path, ZIP_RDONLY, NULL);
+    if (za == NULL) {
+        printf(LOG_ERR "Failed to open \"%s\"", tmp_path);
+        return -1;
+    }
+
+    zip_entries = zip_get_num_entries(za, 0);
+    rc = malloc(sizeof(*rc));
+    TAILQ_INIT(&rc->head);
+
+    printf(LOG_INFO "Reading payload...\n");
+    printf(LOG_INFO "Populating netdb with ~%d entries...\n", zip_entries);
+
+    for (size_t i = 0; i < zip_entries; ++i) {
+        if (zip_stat_index(za, i, 0, &stat) != 0) {
+            printf(LOG_WARN "Skipping entry %d\n", i);
+            continue;
+        }
+
+        zfp = zip_fopen_index(za, i, 0);
+        if (zfp == NULL) {
+            printf(LOG_WARN "Skipping entry %d\n", i);
+            continue;
+        }
+
+        /* Get netdb path */
+        snprintf(netdb_path, sizeof(tmp_path), "%s%s",
+            DEFAULT_NETDB_PATH, stat.name);
+
+        if (open_file(netdb_path, "w", &netdb_fp) < 0) {
+            printf(LOG_WARN "Skipping entry %d\n", i);
+            close_file(netdb_fp);
+            break;
+        }
+
+        buf = calloc(stat.size + 1, sizeof(char));
+        bytes_read = 0;
+        max_progress = stat.size;
+
+        while (bytes_read != stat.size) {
+            count = zip_fread(zfp, buf, BLOCKSIZE);
+            if (count < 0) {
+                printf(LOG_WARN "Skipping entry %d\n", i);
+                break;
+            }
+
+            netdb_get_key(buf, "host", ip);
+            netdb_get_key(buf, "port", port);
+
+            if (ip[0] != '\0' && port[0] != '\0') {
+                rinf = calloc(1, sizeof(*rinf));
+                rinf->address = strdup(ip);
+                rinf->port = strdup(port);
+                TAILQ_INSERT_TAIL(&rc->head, rinf, link);
+            }
+
+            progress = (bytes_read / max_progress) * 100;
+            log_diag(LOG_INFO "Unpacking entry %d (%.1f%%)\n", i, progress);
+
+            fwrite(buf, sizeof(char), BLOCKSIZE, FHANDLE(netdb_fp));
+            bytes_read += count;
+            ip[0] = '\0';
+            port[0] = '\0';
+        }
+
+        log_diag("... OK\n");
+        close_file(netdb_fp);
+        zip_fclose(zfp);
+        free(buf);
+    }
+
+    *res = rc;
+    zip_close(za);
+    return 0;
+}
+
 int
 su3_reseed(const char *file)
 {
@@ -217,12 +405,15 @@ su3_reseed(const char *file)
     uint8_t version_len;
     uint16_t sig_len, sig_type;
     uint64_t content_len;
-    off_t sig_off;
+    off_t sig_off, payload_off;
     char *sig_buf, *id_buf;
+    char *payload;
     const char *sig_typestr;
     struct file *fp;
     struct su3_hdr hdr;
     struct i2pcert *cert;
+    struct router_info *tmp;
+    struct rinfchain *rc;
 
     error = open_file(file, "r", &fp);
     if (error < 0) {
@@ -258,6 +449,13 @@ su3_reseed(const char *file)
         goto done;
     }
 
+    /* Try to allocate the payload buffer */
+    payload = calloc(content_len + 1, sizeof(char));
+    if (payload == NULL) {
+        return -ENOMEM;
+        goto done;
+    }
+
     /* Read the signature */
     sig_off = sizeof(hdr) + signer_idlen + content_len + version_len;
     fseek(FHANDLE(fp), sig_off, SEEK_SET);
@@ -266,6 +464,11 @@ su3_reseed(const char *file)
     /* Read the signer ID */
     fseek(FHANDLE(fp), sizeof(hdr) + version_len, SEEK_SET);
     fread(id_buf, sizeof(char), signer_idlen, FHANDLE(fp));
+
+    /* Read in the payload */
+    payload_off = sizeof(hdr) + signer_idlen + version_len;
+    fseek(FHANDLE(fp), payload_off, SEEK_SET);
+    fread(payload, sizeof(char), content_len, FHANDLE(fp));
 
     printf(LOG_INFO "Fetching cert from signer ID: %s\n", id_buf);
     if ((cert = get_cert(id_buf)) == NULL) {
@@ -286,6 +489,22 @@ su3_reseed(const char *file)
         printf(LOG_WARN "Bad signature, cert, or public key - rejecting...\n");
         goto done;
     }
+
+    /* Now... Populate the netdb */
+    error = unpack_payload(payload, content_len, &rc);
+    if (error != 0) {
+        printf(LOG_WARN "Failed to unpack payload\n");
+        goto done;
+    }
+
+    printf(LOG_INFO "Reading routerinfo chain...\n");
+    TAILQ_FOREACH(tmp, &rc->head, link) {
+        printf(LOG_INFO "Found node @ %s:%s\n",
+            tmp->address, tmp->port);
+    }
+
+    rinfchain_free(rc);
+    rc = NULL;
 done:
     free_cert(cert);
     free(id_buf);

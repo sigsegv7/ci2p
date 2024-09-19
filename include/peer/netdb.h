@@ -30,6 +30,7 @@
 #ifndef PEER_NETDB_H_
 #define PEER_NETDB_H_
 
+#include <sys/queue.h>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
@@ -37,8 +38,16 @@ struct router_info {
     EVP_PKEY *enckey;       /* Encryption key */
     EVP_PKEY *signkey;      /* Signing key */
     X509 *cert;             /* Certificate */
-    const char *address;    /* IP address */
+    char *address;          /* IP address */
+    char *port;             /* Port */
     uint32_t flags;         /* Router flags */
+    struct router_info *next;
+    TAILQ_ENTRY(router_info) link;
+};
+
+/* Router info chain */
+struct rinfchain {
+    TAILQ_HEAD(, router_info) head;
 };
 
 #endif  /* PEER_NETDB_H_ */
