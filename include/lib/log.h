@@ -34,6 +34,7 @@
 
 #define LOG_INFO "[? INFO] "
 #define LOG_WARN "[* WARN] "
+#define LOG_ERR  "[* ERROR] "
 #define LOG_CRIT "[! FATAL] "
 
 #define DIAGNOSTIC
