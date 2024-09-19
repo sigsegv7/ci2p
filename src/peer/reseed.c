@@ -184,6 +184,31 @@ get_su3(CURL *curl, const char *url)
     return 0;
 }
 
+/*
+ * Verify the SU3 signature.
+ *
+ * @hdr: .su3 header
+ * @cert: Certificate
+ *
+ * TODO: Validate .su3 signature
+ *
+ */
+static int
+verify_su3(const struct su3_hdr *hdr, struct i2pcert *cert)
+{
+    BIO *bio;
+
+    bio = BIO_new_fp(stdout, BIO_NOCLOSE);
+    if (bio == NULL) {
+        return -1;
+    }
+
+    printf("** Begin dump of public key parameters **\n");
+    EVP_PKEY_print_public(bio, cert->pubkey, 0, NULL);
+    BIO_free(bio);
+    return 0;
+}
+
 int
 su3_reseed(const char *file)
 {
@@ -254,21 +279,15 @@ su3_reseed(const char *file)
         cert->not_before, cert->not_after);
 
     sig_typestr = su3_sigtypes[sig_type];
-    log_diag("** Begin dump of %s signature **\n", sig_typestr);
-    for (size_t i = 0; i < sig_len; i += 2) {
-        printf("%02hhx ", sig_buf[i + 1]);
-        printf("%02hhx ", sig_buf[i]);
+    printf(LOG_INFO "Signature type: %s\n", sig_typestr);
 
-        if ((i % 20) == 0 && i != 0) {
-            printf("\n");
-        }
+    error = verify_su3(&hdr, cert);
+    if (error != 0) {
+        printf(LOG_WARN "Bad signature, cert, or public key - rejecting...\n");
+        goto done;
     }
-
-    printf("\n");
 done:
     free_cert(cert);
-    free(sig_buf);
-
     free(id_buf);
     close_file(fp);
     return error;
