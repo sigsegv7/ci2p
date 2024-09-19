@@ -27,47 +27,21 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef PEER_RESEED_H_
-#define PEER_RESEED_H_
+#ifndef LIB_LOG_H_
+#define LIB_LOG_H_
 
-#include <stdint.h>
+#include <stdio.h>
 
-/* File type values */
-#define SU3_FILE_ZIP    0x00
-#define SU3_FILE_XML    0x01
-#define SU3_FILE_HTML   0x02
-#define SU3_FILE_XMLGZ  0x03
-#define SU3_FILE_TXTGZ  0x04
-#define SU3_FILE_DMG    0x05
-#define SU3_FILE_EXE    0x06
+#define LOG_INFO "[? INFO] "
+#define LOG_WARN "[* WARN] "
+#define LOG_CRIT "[! FATAL] "
 
-/* Reseed content type value */
-#define SU3_CONTENT_RESEED 0x03
+#define DIAGNOSTIC
 
-/* SU3 header magic and magic length*/
-#define SU3_MAGIC "I2Psu3"
-#define SU3_MAGLEN 6
+#if defined(DIAGNOSTIC)
+#define log_diag(...) printf(__VA_ARGS__)
+#else
+#define log_diag(...) (void)0
+#endif
 
-struct su3_hdr {
-    char magic[6];          /* Magic number (I2Psu3) */
-    uint8_t unused;         /* Unused */
-    uint8_t version;        /* SU3 file format version */
-    uint16_t sig_type;      /* Signature type */
-    uint16_t sig_len;       /* Signature length */
-    uint8_t unused1;        /* Unused */
-    uint8_t version_len;    /* Version length in bytes (w/ pad) */
-    uint8_t unused2;        /* Unused */
-    uint8_t signer_idlen;   /* Signer ID length in bytes */
-    uint64_t content_len;   /* Content length (not including hdr or sig) */
-    uint8_t unused3;        /* Unused */
-    uint8_t file_type;      /* File type */
-    uint8_t unused4;        /* Unused */
-    uint8_t content_type;   /* Content type */
-    char unused5[12];       /* Unused */
-    char data[];
-} __attribute__((packed));
-
-int request_reseed(void);
-int su3_reseed(const char *file);
-
-#endif  /* PEER_RESEED_H_ */
+#endif  /* LIB_LOG_H_ */

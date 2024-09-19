@@ -27,47 +27,46 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef PEER_RESEED_H_
-#define PEER_RESEED_H_
+#include <lib/file.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
 
-#include <stdint.h>
+int
+open_file(const char *filename, const char *mode, struct file **res)
+{
+    struct file *fp;
 
-/* File type values */
-#define SU3_FILE_ZIP    0x00
-#define SU3_FILE_XML    0x01
-#define SU3_FILE_HTML   0x02
-#define SU3_FILE_XMLGZ  0x03
-#define SU3_FILE_TXTGZ  0x04
-#define SU3_FILE_DMG    0x05
-#define SU3_FILE_EXE    0x06
+    fp = malloc(sizeof(*fp));
 
-/* Reseed content type value */
-#define SU3_CONTENT_RESEED 0x03
+    if (fp == NULL) {
+        return errno;
+    }
 
-/* SU3 header magic and magic length*/
-#define SU3_MAGIC "I2Psu3"
-#define SU3_MAGLEN 6
+    fp->handle = fopen(filename, mode);
 
-struct su3_hdr {
-    char magic[6];          /* Magic number (I2Psu3) */
-    uint8_t unused;         /* Unused */
-    uint8_t version;        /* SU3 file format version */
-    uint16_t sig_type;      /* Signature type */
-    uint16_t sig_len;       /* Signature length */
-    uint8_t unused1;        /* Unused */
-    uint8_t version_len;    /* Version length in bytes (w/ pad) */
-    uint8_t unused2;        /* Unused */
-    uint8_t signer_idlen;   /* Signer ID length in bytes */
-    uint64_t content_len;   /* Content length (not including hdr or sig) */
-    uint8_t unused3;        /* Unused */
-    uint8_t file_type;      /* File type */
-    uint8_t unused4;        /* Unused */
-    uint8_t content_type;   /* Content type */
-    char unused5[12];       /* Unused */
-    char data[];
-} __attribute__((packed));
+    /* Did opening the file fail? */
+    if (fp->handle == NULL) {
+        free(fp);
+        return errno;
+    }
 
-int request_reseed(void);
-int su3_reseed(const char *file);
+    /* Get the file size */
+    fseek(fp->handle, 0, SEEK_END);
+    fp->size = ftell(fp->handle);
+    fseek(fp->handle, 0, SEEK_SET);
 
-#endif  /* PEER_RESEED_H_ */
+    *res = fp;
+    return 0;
+}
+
+void
+close_file(struct file *fp)
+{
+    if (fp == NULL) {
+        return;
+    }
+
+    fclose(fp->handle);
+    free(fp);
+}
